@@ -52,12 +52,14 @@ private:
 AudioInputI2S            i2s2;           //xy=105,63
 AudioAnalyzePeak         peak1;          //xy=278,108
 MyAudioRecordQueue       queue1;         //xy=281,63
+MyAudioRecordQueue       queue2;
 AudioPlaySdRaw           playRaw1;       //xy=302,157
 AudioOutputI2S           i2s1;           //xy=470,120
 AudioConnection          patchCord1(i2s2, 0, queue1, 0);
 AudioConnection          patchCord2(i2s2, 0, peak1, 0);
 AudioConnection          patchCord3(playRaw1, 0, i2s1, 0);
 AudioConnection          patchCord4(playRaw1, 0, i2s1, 1);
+AudioConnection          patchCord5(i2s2, 1, queue2, 0);
 AudioControlSGTL5000     sgtl5000_1;     //xy=265,212
 // GUItool: end automatically generated code
 
@@ -107,7 +109,7 @@ void setup() {
 
   // Audio connections require memory, and the record queue
   // uses this memory to buffer incoming audio.
-  AudioMemory(120);
+  AudioMemory(512);
 
   // Enable the audio shield, select input, and enable output
   sgtl5000_1.enable();
@@ -181,13 +183,14 @@ void startRecording() {
   frec = SD.open("RECORD.RAW", FILE_WRITE);
   if (frec) {
     queue1.begin();
+    queue2.begin();
     mode = 1;
     recordingMillis = 0;
   }
 }
 
 void continueRecording() {
-  if (queue1.available() >= 2) {
+  if (queue1.available() > 0 && queue2.available() > 0) {
     byte buffer[512];
     // Fetch 2 blocks from the audio library and copy
     // into a 512 byte buffer.  The Arduino SD library
@@ -195,8 +198,8 @@ void continueRecording() {
     // writes are used.
     memcpy(buffer, queue1.readBuffer(), 256);
     queue1.freeBuffer();
-    memcpy(buffer+256, queue1.readBuffer(), 256);
-    queue1.freeBuffer();
+    memcpy(buffer+256, queue2.readBuffer(), 256);
+    queue2.freeBuffer();
     // write all 512 bytes to the SD card
     elapsedMicros usec = 0;
     frec.write(buffer, 512);
@@ -210,18 +213,21 @@ void continueRecording() {
     // approximately 301700 us of audio, to allow time
     // for occasional high SD card latency, as long as
     // the average write time is under 5802 us.
-    Serial.print("SD write, us=");
-    Serial.println(usec);
+    // Serial.print("SD write, us=");
+    // Serial.println(usec);
   }
 }
 
 void stopRecording() {
   Serial.println("stopRecording");
   queue1.end();
+  queue2.end();
   if (mode == 1) {
-    while (queue1.available() > 0) {
+    while (queue1.available() > 0 && queue2.available() > 0) {
       frec.write((byte*)queue1.readBuffer(), 256);
       queue1.freeBuffer();
+      frec.write((byte*)queue2.readBuffer(), 256);
+      queue2.freeBuffer();
     }
     frec.close();
 
