@@ -66,6 +66,8 @@ int mode = 0;  // 0=stopped, 1=recording, 2=playing
 // The file where data is recorded
 File frec;
 
+elapsedMillis recordingMillis;
+
 void setup() {
   // Configure the pushbutton pins
   pinMode(0, INPUT_PULLUP);
@@ -91,6 +93,8 @@ void setup() {
       delay(500);
     }
   }
+
+  startRecording();
 }
 
 
@@ -120,6 +124,11 @@ void loop() {
   // If we're playing or recording, carry on...
   if (mode == 1) {
     continueRecording();
+
+    if (recordingMillis > 20000)
+    {
+        stopRecording();
+    }
   }
   if (mode == 2) {
     continuePlaying();
@@ -142,6 +151,7 @@ void startRecording() {
   if (frec) {
     queue1.begin();
     mode = 1;
+    recordingMillis = 0;
   }
 }
 
@@ -169,8 +179,8 @@ void continueRecording() {
     // approximately 301700 us of audio, to allow time
     // for occasional high SD card latency, as long as
     // the average write time is under 5802 us.
-    //Serial.print("SD write, us=");
-    //Serial.println(usec);
+    Serial.print("SD write, us=");
+    Serial.println(usec);
   }
 }
 
