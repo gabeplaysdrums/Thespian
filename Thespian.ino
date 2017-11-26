@@ -17,10 +17,41 @@
 #include <SD.h>
 #include <SerialFlash.h>
 
+class MyAudioRecordQueue : public AudioStream
+{
+public:
+    MyAudioRecordQueue(void) : AudioStream(1, inputQueueArray),
+        userblock(NULL), head(0), tail(0), enabled(0) { }
+    void begin(void) {
+        clear();
+        enabled = 1;
+        overruns = 0;
+    }
+    int available(void);
+    void clear(void);
+    int16_t * readBuffer(void);
+    void freeBuffer(void);
+    void end(void) {
+        enabled = 0;
+    }
+    virtual void update(void);
+
+    size_t GetOverrunCount() const
+    {
+        return overruns;
+    }
+private:
+    audio_block_t *inputQueueArray[1];
+    audio_block_t * volatile queue[53];
+    audio_block_t *userblock;
+    volatile uint8_t head, tail, enabled;
+    size_t overruns = 0;
+};
+
 // GUItool: begin automatically generated code
 AudioInputI2S            i2s2;           //xy=105,63
 AudioAnalyzePeak         peak1;          //xy=278,108
-AudioRecordQueue         queue1;         //xy=281,63
+MyAudioRecordQueue       queue1;         //xy=281,63
 AudioPlaySdRaw           playRaw1;       //xy=302,157
 AudioOutputI2S           i2s1;           //xy=470,120
 AudioConnection          patchCord1(i2s2, 0, queue1, 0);
@@ -76,7 +107,7 @@ void setup() {
 
   // Audio connections require memory, and the record queue
   // uses this memory to buffer incoming audio.
-  AudioMemory(60);
+  AudioMemory(120);
 
   // Enable the audio shield, select input, and enable output
   sgtl5000_1.enable();
@@ -125,7 +156,7 @@ void loop() {
   if (mode == 1) {
     continueRecording();
 
-    if (recordingMillis > 20000)
+    if (recordingMillis > 30000)
     {
         stopRecording();
     }
@@ -193,6 +224,9 @@ void stopRecording() {
       queue1.freeBuffer();
     }
     frec.close();
+
+    Serial.print("overruns: ");
+    Serial.println(queue1.GetOverrunCount());
   }
   mode = 0;
 }
@@ -220,4 +254,88 @@ void stopPlaying() {
 void adjustMicLevel() {
   // TODO: read the peak1 object and adjust sgtl5000_1.micGain()
   // if anyone gets this working, please submit a github pull request :-)
+}
+
+
+
+
+
+#include "utility/dspinst.h"
+
+int MyAudioRecordQueue::available(void)
+{
+    uint32_t h, t;
+
+    h = head;
+    t = tail;
+    if (h >= t) return h - t;
+    return 53 + h - t;
+}
+
+void MyAudioRecordQueue::clear(void)
+{
+    uint32_t t;
+
+    if (userblock) {
+        release(userblock);
+        userblock = NULL;
+    }
+    t = tail;
+    while (t != head) {
+        if (++t >= 53) t = 0;
+        release(queue[t]);
+    }
+    tail = t;
+}
+
+int16_t * MyAudioRecordQueue::readBuffer(void)
+{
+    uint32_t t;
+
+    if (userblock) return NULL;
+    t = tail;
+    if (t == head) return NULL;
+    if (++t >= 53) t = 0;
+    // Serial.print("readBuffer.  available: ");
+    // Serial.println(available());
+    userblock = queue[t];
+    tail = t;
+    return userblock->data;
+}
+
+void MyAudioRecordQueue::freeBuffer(void)
+{
+    if (userblock == NULL) return;
+    release(userblock);
+    userblock = NULL;
+    // Serial.println("freeBuffer");
+}
+
+void MyAudioRecordQueue::update(void)
+{
+    audio_block_t *block;
+    uint32_t h;
+
+    block = receiveReadOnly();
+    if (!block) return;
+    if (!enabled) {
+        release(block);
+        return;
+    }
+    h = head + 1;
+    if (h >= 53)
+    {
+        h = 0;
+        // Serial.println("Wrapping around ring buffer");
+    }
+
+    if (h == tail) {
+        release(block);
+        // Serial.print("Buffer dropped.  available: ");
+        // Serial.println(available());
+        overruns++;
+    } else {
+        queue[h] = block;
+        head = h;
+    }
 }
