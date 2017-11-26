@@ -180,7 +180,7 @@ void startRecording() {
     // must be deleted before new data is written.
     SD.remove("RECORD.RAW");
   }
-  frec = SD.open("RECORD.RAW", FILE_WRITE);
+  frec = SD.open("RECORD.RAW", O_CREAT | O_WRITE);
   if (frec) {
     queue1.begin();
     queue2.begin();
@@ -213,8 +213,8 @@ void continueRecording() {
     // approximately 301700 us of audio, to allow time
     // for occasional high SD card latency, as long as
     // the average write time is under 5802 us.
-    // Serial.print("SD write, us=");
-    // Serial.println(usec);
+    Serial.print("SD write, us=");
+    Serial.println(usec);
   }
 }
 
