@@ -16,6 +16,19 @@
 #include <SPI.h>
 #include <SD.h>
 #include <SerialFlash.h>
+#include "record_sd_wav.h"
+
+#if defined(__MKL26Z64__)
+    #warning("[gabe] __MKL26Z64__")
+#elif defined(__MK20DX128__)
+    #warning("[gabe] __MK20DX128__")
+#elif defined(__MK20DX256__)
+    #warning("[gabe] __MK20DX256__")
+#elif defined(__MK64FX512__)
+    #warning("[gabe] __MK64FX512__")
+#elif defined(__MK66FX1M0__)
+    #warning("[gabe] __MK66FX1M0__")
+#endif
 
 class MyAudioRecordQueue : public AudioStream
 {
@@ -55,11 +68,14 @@ MyAudioRecordQueue       queue1;         //xy=281,63
 MyAudioRecordQueue       queue2;
 AudioPlaySdRaw           playRaw1;       //xy=302,157
 AudioOutputI2S           i2s1;           //xy=470,120
+AudioRecordSdWavStereo   recWav1;
 AudioConnection          patchCord1(i2s2, 0, queue1, 0);
 AudioConnection          patchCord2(i2s2, 0, peak1, 0);
 AudioConnection          patchCord3(playRaw1, 0, i2s1, 0);
 AudioConnection          patchCord4(playRaw1, 0, i2s1, 1);
 AudioConnection          patchCord5(i2s2, 1, queue2, 0);
+AudioConnection          patchCord6(i2s2, 0, recWav1, 0);
+AudioConnection          patchCord7(i2s2, 1, recWav1, 1);
 AudioControlSGTL5000     sgtl5000_1;     //xy=265,212
 // GUItool: end automatically generated code
 
@@ -180,13 +196,16 @@ void startRecording() {
     // must be deleted before new data is written.
     SD.remove("RECORD.RAW");
   }
-  frec = SD.open("RECORD.RAW", O_CREAT | O_WRITE);
+  frec = SD.open("RECORD.RAW", FILE_WRITE);
   if (frec) {
     queue1.begin();
     queue2.begin();
     mode = 1;
-    recordingMillis = 0;
   }
+
+  recWav1.begin("RECORD.WAV");
+
+  recordingMillis = 0;
 }
 
 void continueRecording() {
@@ -215,7 +234,10 @@ void continueRecording() {
     // the average write time is under 5802 us.
     Serial.print("SD write, us=");
     Serial.println(usec);
+
   }
+
+  recWav1.process();
 }
 
 void stopRecording() {
@@ -234,6 +256,8 @@ void stopRecording() {
     Serial.print("overruns: ");
     Serial.println(queue1.GetOverrunCount());
   }
+
+  recWav1.end();
   mode = 0;
 }
 
