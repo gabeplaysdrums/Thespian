@@ -74,6 +74,7 @@ const int myInput = AUDIO_INPUT_LINEIN;
 //#define SDCARD_MOSI_PIN  11
 //#define SDCARD_SCK_PIN   13
 
+File file;
 
 // Remember which mode we're doing
 int mode = 0;  // 0=stopped, 1=recording, 2=playing
@@ -136,7 +137,8 @@ void loop() {
 
 void startRecording() {
   Serial.println("startRecording");
-  recWav1.begin("RECORD.WAV");
+  file = SD.open("RECORD.WAV", O_CREAT | O_WRITE);
+  recWav1.begin(&file);
   mode = 1;
   recordingMillis = 0;
 }

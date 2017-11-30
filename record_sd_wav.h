@@ -3,7 +3,6 @@
 
 #include "Arduino.h"
 #include "AudioStream.h"
-#include "SD.h"
 #include "memcpy_audio.h"
 #include "stats.h"
 
@@ -36,7 +35,7 @@ class AudioRecordSdWav : public AudioStream
 public:
     AudioRecordSdWav(void) : AudioStream(ninput, inputQueueArray) { }
 
-    void begin(const char* filename);
+    void begin(File* f);
     void end();
     void process();
 
@@ -84,7 +83,7 @@ private:
     volatile uint32_t tail = 0;
     volatile bool empty = true;
     volatile bool enabled = false;
-    File file;
+    File* file = nullptr;
 
     uint32_t validBlocks = 0;
     uint32_t droppedBlocks = 0;
@@ -147,32 +146,21 @@ namespace {
 }
 
 template<unsigned char ninput>
-void AudioRecordSdWav<ninput>::begin(const char* filename) {
+void AudioRecordSdWav<ninput>::begin(File* f) {
 #if DEBUG_AUDIO_RECORD_SD_WAV
-    Serial.print("AudioRecordSdWav::begin(\"");
-    Serial.print(filename);
-    Serial.println("\")");
+    Serial.print("AudioRecordSdWav::begin()");
 #endif
 
-    if (SD.exists(filename)) {
-        SD.remove(filename);
-    }
-
-#if TEST_AUDIO_RECORD_SD_WAV_PREALLOC_FILE
-    file = SD.createContiguous(filename, 100*1024*1024);
-#else
-    file = SD.open(filename, O_WRITE | O_CREAT);
-#endif
-
-    if (!file) return;
+    file = f;
+    if (!file || !*file) return;
 
     constexpr char Header[] = "RIFF----WAVEfmt "; // (chunk size to be filled in later)
-    file.write(Header, sizeof(Header) - 1); // do not write string null terminator
+    file->write(Header, sizeof(Header) - 1); // do not write string null terminator
 
     // no extension data
-    writeWordLittleEndian(file, 16, 4);
+    writeWordLittleEndian(*file, 16, 4);
     // PCM - integer samples
-    writeWordLittleEndian(file, 1, 2);
+    writeWordLittleEndian(*file, 1, 2);
 
     // number of channels
     constexpr uint16_t channelCount = ninput;
@@ -180,7 +168,7 @@ void AudioRecordSdWav<ninput>::begin(const char* filename) {
     Serial.print("Number of channels: ");
     Serial.println(channelCount);
 #endif
-    writeWordLittleEndian(file, channelCount, 2);
+    writeWordLittleEndian(*file, channelCount, 2);
 
     // samples per second (Hz)
     constexpr uint32_t sampleRate = static_cast<uint32_t>(AUDIO_RECORD_SAMPLE_RATE);
@@ -188,7 +176,7 @@ void AudioRecordSdWav<ninput>::begin(const char* filename) {
     Serial.print("Sample rate: ");
     Serial.println(sampleRate);
 #endif
-    writeWordLittleEndian(file, sampleRate, 4);
+    writeWordLittleEndian(*file, sampleRate, 4);
 
     // (Sample Rate * BitsPerSample * Channels) / 8
     constexpr uint16_t bitsPerSample = 8 * sizeof(int16_t);
@@ -197,7 +185,7 @@ void AudioRecordSdWav<ninput>::begin(const char* filename) {
     Serial.print("Data rate: ");
     Serial.println(dataRate);
 #endif
-    writeWordLittleEndian(file, dataRate, 4);
+    writeWordLittleEndian(*file, dataRate, 4);
 
     // data block size (size of two integer samples, one for each channel, in bytes)
     constexpr uint16_t blockSize = sizeof(int16_t) * ninput;
@@ -205,22 +193,22 @@ void AudioRecordSdWav<ninput>::begin(const char* filename) {
     Serial.print("Block size: ");
     Serial.println(blockSize);
 #endif
-    writeWordLittleEndian(file, blockSize, 2);
+    writeWordLittleEndian(*file, blockSize, 2);
 
     // number of bits per sample (use a multiple of 8)
 #if DEBUG_AUDIO_RECORD_SD_WAV
     Serial.print("Bits per sample: ");
     Serial.println(bitsPerSample);
 #endif
-    writeWordLittleEndian(file, bitsPerSample, 2);
+    writeWordLittleEndian(*file, bitsPerSample, 2);
 
-    dataChunkPos = file.position();
+    dataChunkPos = file->position();
 
     constexpr char DataChunk[] = "data----";
-    file.write(DataChunk, sizeof(DataChunk) - 1); // do not write string null terminator
+    file->write(DataChunk, sizeof(DataChunk) - 1); // do not write string null terminator
 
     // incur penalty of flush now before samples start flowing
-    file.flush();
+    file->flush();
 
     head = 0;
     tail = 0;
@@ -247,23 +235,24 @@ void AudioRecordSdWav<ninput>::end() {
     write(pendingInterleavedSamples());
 
     // (We'll need the final file size to fix the chunk sizes above)
-    const uint32_t fileLength = file.position();
+    const uint32_t fileLength = file->position();
 
     // Fix the data chunk header to contain the data size
-    file.seek(dataChunkPos + 4);
-    writeWordLittleEndian(file, fileLength - dataChunkPos + 8);
+    file->seek(dataChunkPos + 4);
+    writeWordLittleEndian(*file, fileLength - dataChunkPos + 8);
 
     // Fix the file header to contain the proper RIFF chunk size, which is (file size - 8) bytes
-    file.seek(0 + 4);
-    writeWordLittleEndian(file, fileLength - 8, 4);
+    file->seek(0 + 4);
+    writeWordLittleEndian(*file, fileLength - 8, 4);
 
-    file.flush();
+    file->flush();
 
 #if TEST_AUDIO_RECORD_SD_WAV_PREALLOC_FILE
-    file.truncate(fileLength);
+    file->truncate(fileLength);
 #endif
 
-    file.close();
+    file->close();
+    file = nullptr;
 }
 
 template<unsigned char ninput>
@@ -311,8 +300,8 @@ void AudioRecordSdWav<ninput>::write(uint32_t sampleCount) {
         Serial.println(sampleCount2);
 #endif
 
-        file.write(reinterpret_cast<const uint8_t*>(interleavedQueue + t), sampleCount1 * sizeof(int16_t));
-        file.write(reinterpret_cast<const uint8_t*>(interleavedQueue), sampleCount2 * sizeof(int16_t));
+        file->write(reinterpret_cast<const uint8_t*>(interleavedQueue + t), sampleCount1 * sizeof(int16_t));
+        file->write(reinterpret_cast<const uint8_t*>(interleavedQueue), sampleCount2 * sizeof(int16_t));
     }
     else {
         // Chunk is contiguous, Write it to the file
@@ -323,7 +312,7 @@ void AudioRecordSdWav<ninput>::write(uint32_t sampleCount) {
         Serial.println(" samples");
 #endif
 
-        file.write(reinterpret_cast<const uint8_t*>(interleavedQueue + t), sampleCount * sizeof(int16_t));
+        file->write(reinterpret_cast<const uint8_t*>(interleavedQueue + t), sampleCount * sizeof(int16_t));
     }
 
     // advance tail
