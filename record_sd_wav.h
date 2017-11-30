@@ -5,6 +5,7 @@
 #include "AudioStream.h"
 #include "SD.h"
 #include "memcpy_audio.h"
+#include "stats.h"
 
 // Debugging
 
@@ -14,6 +15,16 @@
 // #define DEBUG_AUDIO_RECORD_SD_WAV_UPDATE 1
 // Uncomment to debug AudioRecordSdWav::write
 // #define DEBUG_AUDIO_RECORD_SD_WAV_WRITE 1
+// Uncomment to debug dropped audio blocks
+#define DEBUG_AUDIO_RECORD_SD_WAV_DROPPED_BLOCKS 1
+// Uncomment to debug long file writes
+#define DEBUG_AUDIO_RECORD_SD_WAV_WRITE_TOO_LONG 1
+
+
+// Testing
+
+// Uncomment to pre-allocate a contiguous file on the SD card
+// #define TEST_AUDIO_RECORD_SD_WAV_PREALLOC_FILE 1
 
 #ifndef AUDIO_RECORD_SAMPLE_RATE
 #define AUDIO_RECORD_SAMPLE_RATE AUDIO_SAMPLE_RATE
@@ -30,7 +41,7 @@ public:
     void process();
 
     // queue should be large enough to accommodate long SD writes
-    static constexpr uint16_t InterleavedQueueLengthMillis = 1000;
+    static constexpr uint16_t InterleavedQueueLengthMillis = 500;
     static constexpr uint16_t InterleavedQueueBlockCount = static_cast<uint16_t>(ceil(
         static_cast<float>(InterleavedQueueLengthMillis) *
         AUDIO_RECORD_SAMPLE_RATE/*samples/sec*/ /
@@ -45,6 +56,20 @@ public:
     uint32_t droppedBlockCount() const { return droppedBlocks; }
     uint32_t partialBlockCount() const { return partialBlocks; }
     uint32_t maxPendingSampleCount() const { return maxPendingSamples; }
+    const Stats<uint32_t>& getWriteMicros() { return writeMicros.get(); }
+    const Stats<uint32_t>& getUpdateMicros() { return updateMicros.get(); }
+    const Stats<uint32_t>& getUpdateIntervalMicros() { return updateIntervalMicros.get(); }
+    const Stats<uint32_t>& getWriteEmptiedInterval() { return writeEmptiedInterval.get(); }
+    void resetStatistics() {
+        validBlocks = 0;
+        droppedBlocks = 0;
+        partialBlocks = 0;
+        maxPendingSamples = 0;
+        writeMicros.reset();
+        updateMicros.reset();
+        updateIntervalMicros.reset();
+        writeEmptiedInterval.reset();
+    }
 
 private:
     void update() override;
@@ -57,6 +82,7 @@ private:
     int16_t interleavedQueue[InterleavedQueueSampleCount];
     volatile uint32_t head = 0;
     volatile uint32_t tail = 0;
+    volatile bool empty = true;
     volatile bool enabled = false;
     File file;
 
@@ -64,7 +90,15 @@ private:
     uint32_t droppedBlocks = 0;
     uint32_t partialBlocks = 0;
     uint32_t maxPendingSamples = 0;
+    uint32_t writesSinceQueueEmptied = 0;
     uint32_t dataChunkPos = 0;
+
+    StatsAccumulator<uint32_t> writeMicros;
+    StatsAccumulator<uint32_t> updateMicros;
+    StatsAccumulator<uint32_t> updateIntervalMicros;
+    StatsAccumulator<uint32_t> writeEmptiedInterval;
+
+    elapsedMicros updateInterval;
 };
 
 typedef AudioRecordSdWav<1> AudioRecordSdWavMono;
@@ -124,7 +158,12 @@ void AudioRecordSdWav<ninput>::begin(const char* filename) {
         SD.remove(filename);
     }
 
-    file = SD.open(filename, FILE_WRITE);
+#if TEST_AUDIO_RECORD_SD_WAV_PREALLOC_FILE
+    file = SD.createContiguous(filename, 100*1024*1024);
+#else
+    file = SD.open(filename, O_WRITE | O_CREAT);
+#endif
+
     if (!file) return;
 
     constexpr char Header[] = "RIFF----WAVEfmt "; // (chunk size to be filled in later)
@@ -180,12 +219,19 @@ void AudioRecordSdWav<ninput>::begin(const char* filename) {
     constexpr char DataChunk[] = "data----";
     file.write(DataChunk, sizeof(DataChunk) - 1); // do not write string null terminator
 
+    // incur penalty of flush now before samples start flowing
+    file.flush();
+
     head = 0;
     tail = 0;
+    empty = true;
     validBlocks = 0;
     partialBlocks = 0;
     droppedBlocks = 0;
     maxPendingSamples = 0;
+    writesSinceQueueEmptied = 0;
+    updateInterval = 0;
+    resetStatistics();
     enabled = true;
 }
 
@@ -212,6 +258,11 @@ void AudioRecordSdWav<ninput>::end() {
     writeWordLittleEndian(file, fileLength - 8, 4);
 
     file.flush();
+
+#if TEST_AUDIO_RECORD_SD_WAV_PREALLOC_FILE
+    file.truncate(fileLength);
+#endif
+
     file.close();
 }
 
@@ -222,16 +273,22 @@ void AudioRecordSdWav<ninput>::process() {
 
 template<unsigned char ninput>
 void AudioRecordSdWav<ninput>::write(uint32_t sampleCount) {
+
+    // __disable_irq();
+    uint32_t pendingSamples = pendingInterleavedSamples();
+#if DEBUG_AUDIO_RECORD_SD_WAV_WRITE
+    uint32_t h = head;
+#endif
+    uint32_t t = tail;
+    // __enable_irq();
+
+    if (sampleCount == 0 || pendingSamples == 0 || pendingSamples < sampleCount) return;
+
 #if DEBUG_AUDIO_RECORD_SD_WAV_WRITE
     Serial.print("AudioRecordSdWav::write(");
     Serial.print(sampleCount);
     Serial.println(")");
-#endif
 
-    uint32_t h = head, t = tail;
-    uint32_t pendingSamples = pendingInterleavedSamples();
-
-#if DEBUG_AUDIO_RECORD_SD_WAV_WRITE
     Serial.print("head: ");
     Serial.print(h);
     Serial.print(" tail: ");
@@ -240,9 +297,9 @@ void AudioRecordSdWav<ninput>::write(uint32_t sampleCount) {
     Serial.println(pendingSamples);
 #endif
 
-    if (pendingSamples < sampleCount) return;
+    elapsedMicros elapsed = 0;
 
-    if (h < t && InterleavedQueueSampleCount - t < sampleCount) {
+    if (InterleavedQueueSampleCount - t < sampleCount) {
         // Chunk is not contiguous.  Write two smaller chunks
         const uint32_t sampleCount1 = InterleavedQueueSampleCount - t;
         const uint32_t sampleCount2 = sampleCount - sampleCount1;
@@ -270,20 +327,53 @@ void AudioRecordSdWav<ninput>::write(uint32_t sampleCount) {
     }
 
     // advance tail
+    // __disable_irq();
     t += sampleCount;
     if (t >= InterleavedQueueSampleCount) {
         t -= InterleavedQueueSampleCount;
     }
     tail = t;
+    empty = (head == tail);
+
+#if DEBUG_AUDIO_RECORD_SD_WAV_WRITE_TOO_LONG
+    if (empty) {
+        writeEmptiedInterval.add(writesSinceQueueEmptied);
+        writesSinceQueueEmptied = 0;
+    }
+    else {
+        writesSinceQueueEmptied++;
+    }
+#endif
+
+    // __enable_irq();
+
+    writeMicros.add(elapsed);
+
+#if DEBUG_AUDIO_RECORD_SD_WAV_WRITE_TOO_LONG
+    if (elapsed > 50000) {
+        Serial.print("Long write detected. elapsed (us): ");
+        Serial.print(elapsed);
+        Serial.print(" pendingSamples: ");
+        Serial.println(pendingSamples);
+
+        // if (enabled) {
+        //     end();
+        // }
+    }
+#endif
 }
 
 template<unsigned char ninput>
 void AudioRecordSdWav<ninput>::update() {
-    if (!enabled) return;
-
 #if DEBUG_AUDIO_RECORD_SD_WAV_UPDATE
-    Serial.println("AudioRecordSdWav::update()");
+    if (enabled) {
+        Serial.println("AudioRecordSdWav::update()");
+    }
 #endif
+
+    // Update interval statistics
+    updateIntervalMicros.add(updateInterval);
+    updateInterval = 0;
 
     audio_block_t* input[ninput];
     uint8_t receivedCount = 0;
@@ -293,8 +383,10 @@ void AudioRecordSdWav<ninput>::update() {
 
         if (!input[channel]) {
 #if DEBUG_AUDIO_RECORD_SD_WAV_UPDATE
-            Serial.print("Failed to receive block from channel ");
-            Serial.println(channel);
+            if (enabled) {
+                Serial.print("Failed to receive block from channel ");
+                Serial.println(channel);
+            }
 #endif
             continue;
         }
@@ -302,13 +394,24 @@ void AudioRecordSdWav<ninput>::update() {
         receivedCount++;
 
 #if DEBUG_AUDIO_RECORD_SD_WAV_UPDATE
-        Serial.print("Received block from channel ");
-        Serial.print(channel);
-        Serial.print(". first: ");
-        Serial.print(*(input[channel]->data));
-        Serial.print(" last: ");
-        Serial.println(*(input[channel]->data + AUDIO_BLOCK_SAMPLES - 1));
+        if (enabled) {
+            Serial.print("Received block from channel ");
+            Serial.print(channel);
+            Serial.print(". first: ");
+            Serial.print(*(input[channel]->data));
+            Serial.print(" last: ");
+            Serial.println(*(input[channel]->data + AUDIO_BLOCK_SAMPLES - 1));
+        }
 #endif
+    }
+
+    if (!enabled) {
+        for (unsigned char channel=0; channel < ninput; channel++) {
+            if (input[channel]) {
+                release(input[channel]);
+            }
+        }
+        return;
     }
 
     uint32_t h = head;
@@ -342,6 +445,8 @@ void AudioRecordSdWav<ninput>::update() {
         validBlocks++;
 
         if (interleavedQueueHasCapacity()) {
+            elapsedMicros elapsed = 0;
+
             copySamplesInterleaved<ninput>(input, interleavedQueue + h);
 
 #if DEBUG_AUDIO_RECORD_SD_WAV_UPDATE
@@ -361,14 +466,24 @@ void AudioRecordSdWav<ninput>::update() {
                 h -= InterleavedQueueSampleCount;
             }
             head = h;
+            empty = false;
+
+            updateMicros.add(elapsed);
         }
         else {
             // queue is not draining fast enough.  drop incoming samples
             droppedBlocks++;
 
-#if DEBUG_AUDIO_RECORD_SD_WAV_UPDATE
+#if DEBUG_AUDIO_RECORD_SD_WAV_DROPPED_BLOCKS
             Serial.print("Audio block dropped! total: ");
-            Serial.println(droppedBlocks);
+            Serial.print(droppedBlocks);
+            Serial.print(" pending samples: ");
+            Serial.print(pendingSamples);
+            Serial.print(" (max: ");
+            Serial.print(InterleavedQueueSampleCount);
+            Serial.print(")");
+            Serial.print(" writes since emptied: ");
+            Serial.println(writesSinceQueueEmptied);
 #endif
         }
     }
@@ -382,6 +497,10 @@ void AudioRecordSdWav<ninput>::update() {
 
 template<unsigned char ninput>
 uint32_t AudioRecordSdWav<ninput>::pendingInterleavedSamples() const {
+    if (head == tail) {
+        return empty ? 0 : InterleavedQueueSampleCount;
+    }
+
     uint32_t h = head, t = tail;
 
     if (h < t) {
@@ -393,7 +512,7 @@ uint32_t AudioRecordSdWav<ninput>::pendingInterleavedSamples() const {
 
 template<unsigned char ninput>
 bool AudioRecordSdWav<ninput>::interleavedQueueHasCapacity() const {
-    return (pendingInterleavedSamples() + ninput * AUDIO_BLOCK_SAMPLES) < InterleavedQueueSampleCount;
+    return (pendingInterleavedSamples() + ninput * AUDIO_BLOCK_SAMPLES) <= InterleavedQueueSampleCount;
 }
 
 #endif // record_sd_wav_h_

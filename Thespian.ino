@@ -21,7 +21,7 @@
 #include "record_sd_wav.h"
 
 // Uncomment to test with a sine wave as input
-//#define TEST_INPUT_SINE 1
+#define TEST_INPUT_SINE 1
 
 #if TEST_INPUT_SINE
 // GUItool: begin automatically generated code
@@ -86,7 +86,7 @@ void setup() {
 
   // Audio connections require memory, and the record queue
   // uses this memory to buffer incoming audio.
-  AudioMemory(10);
+  AudioMemory(30);
 
   // Enable the audio shield, select input, and enable output
   sgtl5000_1.enable();
@@ -121,7 +121,9 @@ void loop() {
   if (mode == 1) {
     continueRecording();
 
-    if (recordingMillis > 600*1000)
+    // if (recordingMillis > 600*1000)
+    if (recordingMillis > 300*1000)
+    // if (recordingMillis > 30*1000)
     {
         stopRecording();
     }
@@ -139,8 +141,70 @@ void startRecording() {
   recordingMillis = 0;
 }
 
+void printRecordingStats() {
+  Serial.print("Valid blocks: ");
+  Serial.println(recWav1.validBlockCount());
+  Serial.print("Dropped blocks: ");
+  Serial.println(recWav1.droppedBlockCount());
+  Serial.print("Partial blocks: ");
+  Serial.println(recWav1.partialBlockCount());
+  Serial.print("Max pending samples: ");
+  Serial.println(recWav1.maxPendingSampleCount());
+  Serial.println("Write speed (us): ");
+  Serial.print("  average: ");
+  Serial.print(recWav1.getWriteMicros().average);
+  Serial.print("   stdev: ");
+  Serial.print(recWav1.getWriteMicros().stdev);
+  Serial.print("   min: ");
+  Serial.print(recWav1.getWriteMicros().min);
+  Serial.print("   max: ");
+  Serial.println(recWav1.getWriteMicros().max);
+  Serial.println("Update speed (us): ");
+  Serial.print("  average: ");
+  Serial.print(recWav1.getUpdateMicros().average);
+  Serial.print("   stdev: ");
+  Serial.print(recWav1.getUpdateMicros().stdev);
+  Serial.print("   min: ");
+  Serial.print(recWav1.getUpdateMicros().min);
+  Serial.print("   max: ");
+  Serial.println(recWav1.getUpdateMicros().max);
+  Serial.println("Update interval (us): ");
+  Serial.print("  average: ");
+  Serial.print(recWav1.getUpdateIntervalMicros().average);
+  Serial.print("   stdev: ");
+  Serial.print(recWav1.getUpdateIntervalMicros().stdev);
+  Serial.print("   min: ");
+  Serial.print(recWav1.getUpdateIntervalMicros().min);
+  Serial.print("   max: ");
+  Serial.println(recWav1.getUpdateIntervalMicros().max);
+  Serial.println("Write emptied interval (write count): ");
+  Serial.print("  average: ");
+  Serial.print(recWav1.getWriteEmptiedInterval().average);
+  Serial.print("   stdev: ");
+  Serial.print(recWav1.getWriteEmptiedInterval().stdev);
+  Serial.print("   min: ");
+  Serial.print(recWav1.getWriteEmptiedInterval().min);
+  Serial.print("   max: ");
+  Serial.print(recWav1.getWriteEmptiedInterval().max);
+  Serial.print("   count: ");
+  Serial.println(recWav1.getWriteEmptiedInterval().count);
+
+  // recWav1.resetStatistics();
+}
+
 void continueRecording() {
   recWav1.process();
+
+  static uint32_t prevElapsedPeriod = 0;
+  const uint32_t elapsedPeriod = recordingMillis / 5000;
+
+  if (elapsedPeriod != prevElapsedPeriod) {
+    prevElapsedPeriod = elapsedPeriod;
+    printRecordingStats();
+    Serial.print("Recording for ");
+    Serial.print(recordingMillis);
+    Serial.println(" millis");
+  }
 }
 
 void stopRecording() {
@@ -150,14 +214,7 @@ void stopRecording() {
   sine1.amplitude(0);
 #endif
   mode = 0;
-  Serial.print("Valid blocks: ");
-  Serial.println(recWav1.validBlockCount());
-  Serial.print("Dropped blocks: ");
-  Serial.println(recWav1.droppedBlockCount());
-  Serial.print("Partial blocks: ");
-  Serial.println(recWav1.partialBlockCount());
-  Serial.print("Max pending samples: ");
-  Serial.println(recWav1.maxPendingSampleCount());
+  printRecordingStats();
 }
 
 void adjustMicLevel() {
