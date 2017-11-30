@@ -12,11 +12,10 @@
 
 #define AUDIO_RECORD_SAMPLE_RATE 44100
 
-#include <Bounce.h>
+#include <SdFat.h>
 #include <Audio.h>
 #include <Wire.h>
 #include <SPI.h>
-#include <SD.h>
 #include <SerialFlash.h>
 #include "record_sd_wav.h"
 
@@ -65,15 +64,16 @@ const int myInput = AUDIO_INPUT_LINEIN;
 //#define SDCARD_SCK_PIN   14
 
 // Use these with the Teensy 3.5 & 3.6 SD card
-#define SDCARD_CS_PIN    BUILTIN_SDCARD
-#define SDCARD_MOSI_PIN  BUILTIN_SDCARD  // not actually used
-#define SDCARD_SCK_PIN   BUILTIN_SDCARD  // not actually used
+// #define SDCARD_CS_PIN    BUILTIN_SDCARD
+// #define SDCARD_MOSI_PIN  BUILTIN_SDCARD  // not actually used
+// #define SDCARD_SCK_PIN   BUILTIN_SDCARD  // not actually used
 
 // Use these for the SD+Wiz820 or other adaptors
 //#define SDCARD_CS_PIN    4
 //#define SDCARD_MOSI_PIN  11
 //#define SDCARD_SCK_PIN   13
 
+SdFatSdioEX sdEx;
 File file;
 
 // Remember which mode we're doing
@@ -102,6 +102,7 @@ void setup() {
   sgtl5000_1.volume(0.5);
 
   // Initialize the SD card
+#if 0
   SPI.setMOSI(SDCARD_MOSI_PIN);
   SPI.setSCK(SDCARD_SCK_PIN);
   if (!(SD.begin(SDCARD_CS_PIN))) {
@@ -111,6 +112,17 @@ void setup() {
       delay(500);
     }
   }
+#else
+    if (!sdEx.begin()) {
+        // stop here if no SD card, but print a message
+        while (1) {
+          Serial.println("Unable to access the SD card");
+          delay(500);
+        }
+    }
+    // make sdEx the current volume.
+    sdEx.chvol();
+#endif
 
   startRecording();
 }
@@ -124,7 +136,7 @@ void loop() {
 
     // if (recordingMillis > 600*1000)
     if (recordingMillis > 300*1000)
-    // if (recordingMillis > 30*1000)
+    // if (recordingMillis > 10*1000)
     {
         stopRecording();
     }
@@ -137,7 +149,14 @@ void loop() {
 
 void startRecording() {
   Serial.println("startRecording");
+#if 0
   file = SD.open("RECORD.WAV", O_CREAT | O_WRITE);
+#else
+  // file.open("RECORD.WAV", O_CREAT | O_WRITE);
+  Serial.print("Removing previously recorded file");
+  file.remove(file.cwd(), "RECORD.WAV");
+  file.createContiguous("RECORD.WAV", 100*1024*1024);
+#endif
   recWav1.begin(&file);
   mode = 1;
   recordingMillis = 0;

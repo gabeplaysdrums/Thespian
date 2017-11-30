@@ -23,7 +23,7 @@
 // Testing
 
 // Uncomment to pre-allocate a contiguous file on the SD card
-// #define TEST_AUDIO_RECORD_SD_WAV_PREALLOC_FILE 1
+#define TEST_AUDIO_RECORD_SD_WAV_PREALLOC_FILE 1
 
 #ifndef AUDIO_RECORD_SAMPLE_RATE
 #define AUDIO_RECORD_SAMPLE_RATE AUDIO_SAMPLE_RATE
@@ -40,7 +40,7 @@ public:
     void process();
 
     // queue should be large enough to accommodate long SD writes
-    static constexpr uint16_t InterleavedQueueLengthMillis = 500;
+    static constexpr uint16_t InterleavedQueueLengthMillis = 400;
     static constexpr uint16_t InterleavedQueueBlockCount = static_cast<uint16_t>(ceil(
         static_cast<float>(InterleavedQueueLengthMillis) *
         AUDIO_RECORD_SAMPLE_RATE/*samples/sec*/ /
