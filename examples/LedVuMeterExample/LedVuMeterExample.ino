@@ -22,13 +22,14 @@ FASTLED_USING_NAMESPACE
 #define LED_DATA_PIN  2
 #define LED_TYPE      WS2812B
 #define COLOR_ORDER   GRB
-#define NUM_LEDS      27
+#define NUM_LEDS      10
 #define BRIGHTNESS    128
 CRGB leds[NUM_LEDS];
 int maxPeakIndexes[2] = { 0, 0 };
 elapsedMillis maxPeakMillis[2] = { 0, 0 };
 
 void setup() {
+  Serial.begin(9600);
   // Audio connections require memory, and the record queue
   // uses this memory to buffer incoming audio.
   AudioMemory(30);
@@ -46,9 +47,20 @@ void setup() {
 void loop() {
   // put your main code here, to run repeatedly:
 
-  if (peak1.available() && peak2.available()) {
+//  const bool hasPeak1 = peak1.available();
+//  const bool hasPeak2 = peak2.available();
+//
+//  Serial.print(hasPeak1);
+//  Serial.print(" ");
+//  Serial.println(hasPeak2);
 
+  if (peak1.available()) {
+
+#if 0
     const auto setLeds = [](float level, int dir, int& maxLevelIndex, elapsedMillis& maxLevelMillis) {
+      Serial.print("peak: ");
+      Serial.println(level);
+
       const int levelIndex = level > 0.999 ? (NUM_LEDS/2) + 1 : level * (NUM_LEDS/2);
       if (levelIndex > maxLevelIndex) {
         maxLevelIndex = levelIndex;
@@ -87,10 +99,20 @@ void loop() {
       else if (maxLevelIndex > 0) {
         leds[NUM_LEDS/2 + dir * maxLevelIndex] = CRGB::White;
       }
-    };
 
+    };
+    
     setLeds(peak1.read(), -1, maxPeakIndexes[0], maxPeakMillis[0]);
     setLeds(peak2.read(), 1, maxPeakIndexes[1], maxPeakMillis[1]);
+#endif
+
+  float level = peak1.read();
+
+  for (int i=0; i < NUM_LEDS; i++) {
+    leds[i] = level > (i * 1.0f / NUM_LEDS) ? CRGB::Blue : CRGB::Black;
+  }
+
     FastLED.show();
   }
 }
+
